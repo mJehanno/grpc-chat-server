@@ -4,12 +4,12 @@ Copyright © 2022 NAME HERE <EMAIL ADDRESS>
 package cmd
 
 import (
-	"fmt"
+	"io"
 	"log"
 	"net"
 
+	"github.com/google/uuid"
 	"github.com/mjehanno/grpc-chat/service/chat"
-	"golang.org/x/net/context"
 
 	"github.com/spf13/cobra"
 	"google.golang.org/grpc"
@@ -19,24 +19,22 @@ const port = ":9000"
 
 type Server struct {
 	chat.UnimplementedChatServiceServer
+	clients map[string]chat.ChatService_ExchangeMessageServer
 }
 
-var messages []*chat.Message = make([]*chat.Message, 0)
-var messageChan chan *chat.Message = make(chan *chat.Message)
+func (s *Server) ExchangeMessage(stream chat.ChatService_ExchangeMessageServer) error {
+	uid := uuid.Must(uuid.NewRandom()).String()
+	s.clients[uid] = stream
 
-func (s *Server) SendMsg(ctx context.Context, message *chat.Message) (*chat.Empty, error) {
-	fmt.Println(message)
-	messages = append(messages, message)
-	messageChan <- message
-	return &chat.Empty{}, nil
-}
-
-func (s *Server) ReceiveMsg(_ *chat.Empty, stream chat.ChatService_ReceiveMsgServer) error {
-	for m := range messageChan {
-		stream.Send(m)
+	for {
+		msg, err := stream.Recv()
+		if err == io.EOF {
+			return nil
+		}
+		for _, s := range s.clients {
+			s.SendMsg(msg)
+		}
 	}
-
-	return nil
 }
 
 // serverCmd represents the server command
@@ -57,7 +55,9 @@ to quickly create a Cobra application.`,
 
 		grpcServer := grpc.NewServer()
 
-		chat.RegisterChatServiceServer(grpcServer, &Server{})
+		chat.RegisterChatServiceServer(grpcServer, &Server{
+			clients: make(map[string]chat.ChatService_ExchangeMessageServer),
+		})
 		log.Printf("GRPC server listening on %v", lis.Addr())
 
 		if err := grpcServer.Serve(lis); err != nil {
